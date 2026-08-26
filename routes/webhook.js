@@ -72,47 +72,33 @@ router.post("/", express.raw({ type: "*/*" }), async (req, res) => {
   const payload = JSON.parse(rawBody);
   const eventType = req.headers["x-kirim-event"];
 
-  // 2) Kita cuma proses event pesan masuk
+  // 2) Cuma proses event pesan masuk
   if (eventType !== "message.received") {
     return res.status(200).json({ ok: true, skipped: eventType });
   }
 
-  try {
-    console.log("Payload webhook diterima:", JSON.stringify(payload, null, 2));
-
-    const extracted = extractIncomingMessage(payload);
-
-    if (!extracted) {
-      console.warn(
-        "Tidak bisa ekstrak pesan teks dari payload (mungkin event status atau tipe pesan non-teks), cek struktur di atas.",
-      );
-      return res
-        .status(200)
-        .json({
-          ok: true,
-          warning: "unrecognized or unsupported payload shape",
-        });
-    }
-
-    const { fromNumber, messageText } = extracted;
-
-    // 3) Simpan pesan user ke history, ambil history lengkap
-    const history = await appendHistory(fromNumber, "user", messageText);
-
-    // 4) Generate balasan dari Groq (bisa manggil tool di tengah jalan)
-    const replyText = await generateReply(history);
-
-    // 5) Simpan balasan AI ke history juga
-    await appendHistory(fromNumber, "assistant", replyText);
-
-    // 6) Kirim balasan ke customer via Kirimdev
-    await sendWhatsAppMessage(fromNumber, replyText);
-
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error("Gagal proses pesan:", err);
-    return res.status(500).json({ error: "Internal error" });
+  const extracted = extractIncomingMessage(payload);
+  if (!extracted) {
+    return res
+      .status(200)
+      .json({ ok: true, warning: "unsupported payload shape" });
   }
-});
 
+  // Acknowledgment langsung ke Kirimdev agar webhook tidak timeout
+  res.status(200).json({ ok: true });
+
+  // 3) Proses pesan secara asinkron di background
+  (async () => {
+    try {
+      const { fromNumber, messageText } = extracted;
+
+      const history = await appendHistory(fromNumber, "user", messageText);
+      const replyText = await generateReply(history);
+      await appendHistory(fromNumber, "assistant", replyText);
+      await sendWhatsAppMessage(fromNumber, replyText);
+    } catch (err) {
+      console.error("Gagal proses pesan di background:", err);
+    }
+  })();
+});
 module.exports = router;
